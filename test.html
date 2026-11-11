@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Booking rules check</title>
+<pre id="out">running…</pre>
+<script src="logic.js"></script>
+<script>
+(async () => {
+  const now = new Date(2026, 10, 9, 14, 0);
+  const results = [];
+  const check = (name, ok) => results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}`);
+
+  check('every genre has a movie', GENRES.every(([g]) => moviesByGenre(g).length > 0));
+  check('all genre lists every movie', moviesByGenre('all').length === MOVIES.length);
+  check('every branch is in a known area', CINEMAS.every(c => AREAS.some(a => a[0] === c.area)));
+
+  const date = nextDays(now)[1];
+  const east = findShowings({ movieId: 'm1', date, area: 'east', now });
+  check('area filter returns only that area', east.length > 0 && east.every(r => r.cinema.area === 'east'));
+  const one = east[0].cinema.id;
+  const branch = findShowings({ movieId: 'm1', date, area: 'east', cinema: one, now });
+  check('branch filter returns one branch', branch.length === 1 && branch[0].cinema.id === one);
+  const evening = findShowings({ movieId: 'm1', date, period: 'evening', now });
+  check('period filter', evening.flatMap(r => r.times).every(t => t >= '17:00'));
+  const today = findShowings({ movieId: 'm1', date: ymd(now), now });
+  check('today hides past rounds', today.flatMap(r => r.times).every(t => t > '14:00'));
+
+  check('month rollover in date list', nextDays(new Date(2026, 10, 28, 9))[3] === '2026-12-01');
+  const t = showtimes('m1', east[0].cinema.id, date)[0];
+  const key = `m1/${one}/${date}/${t}`;
+  check('valid show parses', parseShow(key, now) !== null);
+  check('junk show rejected', parseShow('m1/c1/2026-11-10/99:99', now) === null && parseShow('nope', now) === null);
+  check('show after window rejected', parseShow(`m1/${one}/2030-01-01/${t}`, now) === null);
+
+  const taken = takenSeats(key, ['A1']);
+  check('booked seat is taken', taken.has('A1'));
+  check('some but not most seats taken', taken.size > 5 && taken.size < 60);
+  const free = ALL_SEATS.filter(s => !taken.has(s));
+  check('cannot pick taken seat', toggleSeat([], 'A1', taken).length === 0);
+  check('toggle on and off', toggleSeat(toggleSeat([], free[0], taken), free[0], taken).length === 0);
+  check('max seats enforced', free.slice(0, 9).reduce((sel, s) => toggleSeat(sel, s, taken), []).length === MAX_SEATS);
+  check('mixed price total', totalPrice(['A1', 'J1']) === 500);
+
+  check('snack add and remove', Object.keys(changeSnack(changeSnack({}, 'single:M:salted', 1), 'single:M:salted', -1)).length === 0);
+  check('snack never below zero', Object.keys(changeSnack({}, 'single:M:salted', -1)).length === 0);
+  check('snack capped', Array.from({ length: 15 }).reduce(s => changeSnack(s, 'single:M:salted', 1), {})['single:M:salted'] === MAX_SNACK_QTY);
+  check('unknown snack ignored', Object.keys(changeSnack({}, 'constructor', 1)).length + Object.keys(changeSnack({}, 'single:XL', 1)).length === 0);
+  check('sizes are separate lines', snackLines({ 'single:S:salted': 1, 'single:L:salted': 1 }).length === 2);
+  check('total uses size price', orderTotal(['A1', 'J1'], { 'single:M:salted': 2, 'couple:L:salted': 1 }) === 1097);
+  check('old snack orders do not break', snackLines({ soda: 2 }).length === 0);
+  check('every set has a price per size', SNACKS.every(s => s.prices.length === (s.movie || s.id === 'water' ? 1 : SIZES.length)));
+  check('movie bucket is one size', snackLines({ 'set-m1:ONE:salted': 1 }).length === 1 && Object.keys(changeSnack({}, 'set-m1:M:salted', 1)).length === 0);
+  check('flavor order does not split lines', flavorKey(['cheese', 'salted']) === flavorKey(['salted', 'cheese']));
+  check('mixed flavors in the label', snackLines({ 'single:M:salted+cheese': 1 })[0].label === 'ชุดเดี่ยว (กลาง) รสเค็ม+ชีส');
+  check('popcorn needs a flavor', !snackOption('single:M') && !snackOption('popcorn:M'));
+  check('bad flavors rejected', !snackOption('single:M:mint') && !snackOption('single:M:salted+salted') && !snackOption('single:M:cheese+salted'));
+  check('non-popcorn takes no flavor', !snackOption('soda:M:salted') && !!snackOption('soda:M'));
+  check('flavor combos are separate lines', snackLines({ 'single:M:salted': 1, 'single:M:cheese': 2 }).length === 2);
+  const byId = id => SNACKS.find(s => s.id === id);
+  check('set note is food and drink only', sizeNote(byId('single'), 1) === 'ป๊อปคอร์น 46 ออนซ์ · น้ำอัดลม 22 ออนซ์');
+  check('set note keeps quantities', sizeNote(byId('family'), 0) === 'ป๊อปคอร์น 32 ออนซ์ ×2 · น้ำอัดลม 16 ออนซ์ ×4');
+  check('cookie set says milk', sizeNote(byId('cookie'), 1) === 'คุกกี้ 3 ชิ้น · นม 12 ออนซ์');
+  check('standalone note is just the size', sizeNote(byId('soda'), 2) === '32 ออนซ์');
+  check('cookie and milk sold separately', orderTotal([], { 'item-cookie:M': 1, 'item-milk:M': 1 }) === 115);
+  check('standalone items are sold', orderTotal([], { 'item-hotdog:M': 1, 'water:ONE': 1 }) === 110);
+  check('only this movie has its set', MOVIES.every(m => snacksFor(m.id).filter(s => s.movie).map(s => s.movie).join() === m.id));
+  check('ads link to real movies', ADS.every(a => MOVIES.some(m => a.href === `#/movie/${m.id}`)));
+
+  check('email rules', validEmail('a.b+c@test.co.th') && !validEmail('') && !validEmail('a@b') && !validEmail('a,b@test.com') && !validEmail('a b@test.com'));
+
+  const card = { number: '4242 4242 4242 4242', exp: '12/30', cvc: '123', name: 'A' };
+  check('valid card', Object.keys(validateCard(card, now)).length === 0);
+  check('bad luhn', 'number' in validateCard({ ...card, number: '4242 4242 4242 4241' }, now));
+  check('expired card', 'exp' in validateCard({ ...card, exp: '10/26' }, now));
+  check('card valid through its last month', !('exp' in validateCard({ ...card, exp: '11/26' }, now)));
+  check('month 13 rejected', 'exp' in validateCard({ ...card, exp: '13/30' }, now));
+
+  const salt = '00112233445566778899aabbccddeeff';
+  const hashed = await hashPassword('password1', salt);
+  check('password hash is stable', hashed === await hashPassword('password1', salt));
+  check('wrong password differs', hashed !== await hashPassword('password2', salt));
+
+  const failed = results.filter(r => r.startsWith('FAIL')).length;
+  document.getElementById('out').textContent = `${failed ? failed + ' FAILED' : 'ALL PASSED'}\n\n${results.join('\n')}`;
+})().catch(e => { document.getElementById('out').textContent = 'FAILED\n\n' + e.stack; });
+</script>
+</html>
